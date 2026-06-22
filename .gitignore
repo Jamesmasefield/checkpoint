@@ -18,5 +18,8 @@ npm-debug.log*
 !.vscode/extensions.json
 .idea
 
+# local tooling state
+.claude/
+
 # os
 .DS_Store
