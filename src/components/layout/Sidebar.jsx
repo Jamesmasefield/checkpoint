@@ -1,181 +1,360 @@
-import { useState } from 'react'
-import { NavLink, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { supabase } from '../../lib/supabase'
 import { useProfile } from '../../hooks/useProfile'
-import { useFlows } from '../../hooks/useFlows'
-import StatusDot from '../ui/StatusDot'
+import { useFlowsContext } from '../../hooks/FlowsContext'
+import { getFlowUrgency } from '../../lib/milestoneStatus'
 import ThemeToggle from './ThemeToggle'
-import NewFlowForm from '../forms/NewFlowForm'
 import ImportFlowForm from '../forms/ImportFlowForm'
 
-// Flow.status (draft/active/complete) is a placeholder mapping until the
-// real per-step deadline logic (Build Order step 12) can derive on
-// track / attention / overdue from due dates.
-const FLOW_STATUS_TO_DOT = {
-  draft: 'not_started',
-  active: 'in_progress',
-  complete: 'on_track',
+const ROLE_LABELS = { admin: 'Admin', lol: 'LoL', teacher: 'Teacher' }
+
+function initials(name) {
+  if (!name) return '?'
+  const parts = name.trim().split(/\s+/)
+  return (parts[0][0] + (parts[parts.length - 1]?.[0] ?? '')).toUpperCase()
 }
 
-function formatDate(dateString) {
-  if (!dateString) return ''
-  return new Date(dateString).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })
+function tabFromPath(pathname) {
+  if (pathname.startsWith('/flows/') || pathname === '/') return 'assessments'
+  if (pathname === '/subjects')  return 'subjects'
+  if (pathname === '/templates') return 'templates'
+  if (pathname === '/staff')     return 'staff'
+  if (pathname === '/admin')     return 'admin'
+  if (pathname === '/settings')  return 'settings'
+  return 'assessments'
 }
 
-// Sidebar groups flows by faculty, then by year level within each
-// faculty — mainly visible to admin (school-wide view); a LoL/teacher
-// scoped to one faculty just sees a single faculty group with their years.
-function groupFlows(flows) {
-  const byFaculty = new Map()
-  for (const flow of flows) {
-    const facultyName = flow.faculties?.name ?? 'Unknown faculty'
-    if (!byFaculty.has(facultyName)) byFaculty.set(facultyName, new Map())
-    const byYear = byFaculty.get(facultyName)
-    const year = flow.year_level ?? 'Other'
-    if (!byYear.has(year)) byYear.set(year, [])
-    byYear.get(year).push(flow)
-  }
+const IconDashboard = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 shrink-0 opacity-85">
+    <rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/>
+    <rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>
+  </svg>
+)
+const IconSubjects = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 shrink-0 opacity-85">
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+  </svg>
+)
+const IconTemplates = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 shrink-0 opacity-85">
+    <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+  </svg>
+)
+const IconStaff = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 shrink-0 opacity-85">
+    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+    <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+  </svg>
+)
+const IconAdmin = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 shrink-0 opacity-85">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+  </svg>
+)
+const IconSettings = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 shrink-0 opacity-85">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  </svg>
+)
 
-  return Array.from(byFaculty.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([facultyName, byYear]) => ({
-      facultyName,
-      years: Array.from(byYear.entries())
-        .sort(([a], [b]) => Number(a) - Number(b))
-        .map(([year, yearFlows]) => ({ year, flows: yearFlows })),
-    }))
-}
-
-function NavItem({ to, children }) {
+function TabItem({ label, icon, active, onClick }) {
   return (
-    <NavLink
-      to={to}
-      className={({ isActive }) =>
-        `block rounded-md px-3 py-2 text-sm ${
-          isActive ? 'bg-white/10 text-white' : 'text-slate-300 hover:bg-white/5'
-        }`
-      }
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        'flex w-full items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13px] font-medium transition-all duration-150',
+        active
+          ? 'bg-sidebar-panel text-sidebar-ink shadow-[inset_3px_0_0_var(--primary)]'
+          : 'text-sidebar-muted hover:bg-white/5 hover:text-sidebar-ink',
+      ].join(' ')}
     >
-      {children}
-    </NavLink>
-  )
-}
-
-// "My team" / "Notifications" / "Settings" have no destination page yet
-// (not in the brief's file structure) — rendered as inert nav-styled
-// buttons until those views are scoped.
-function NavPlaceholder({ children }) {
-  return (
-    <button type="button" className="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-300 hover:bg-white/5">
-      {children}
+      {icon}
+      {label}
     </button>
   )
 }
 
-export default function Sidebar({ viewAsProfile }) {
+export default function Sidebar({ viewAsProfile, onSetViewAs }) {
+  const location = useLocation()
   const navigate = useNavigate()
   const { profile: realProfile } = useProfile()
-  const effectiveProfile = viewAsProfile ?? realProfile
-  const { flows, loading, refetch } = useFlows(effectiveProfile)
-  const [showNewFlowForm, setShowNewFlowForm] = useState(false)
+
+  const [activeTab, setActiveTab] = useState(() => tabFromPath(location.pathname))
+  const { flows, loading, refetch } = useFlowsContext()
   const [showImportFlowForm, setShowImportFlowForm] = useState(false)
-  // "View as" is read-only — hide write affordances even if the
-  // impersonated role would normally see them.
-  const isLol = effectiveProfile?.role === 'lol' && !viewAsProfile
-  // Admin sits above LoL in the hierarchy and already has full access
-  // everywhere else, so it can also create flows (also the only way to
-  // test this directly, since "view as" is read-only).
-  const canCreateFlow = (effectiveProfile?.role === 'lol' || effectiveProfile?.role === 'admin') && !viewAsProfile
+  const [viewAsOptions, setViewAsOptions] = useState([])
+
+  const effectiveProfile = viewAsProfile ?? realProfile
+  const isAdmin    = realProfile?.role === 'admin'
+  const isLol      = realProfile?.role === 'lol'
+  const navIsAdmin = effectiveProfile?.role === 'admin'
+  const navIsLol   = effectiveProfile?.role === 'lol'
+  const canViewAs  = isAdmin && !viewAsProfile
+  const canCreate  = navIsAdmin || navIsLol
+
+  useEffect(() => {
+    setActiveTab(tabFromPath(location.pathname))
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (!canViewAs) return
+    let query = supabase
+      .from('profiles')
+      .select('id, full_name, email, role, profile_faculties ( faculties ( id, name ) )')
+      .order('full_name')
+
+    if (isAdmin) {
+      query = query.neq('role', 'admin')
+    } else {
+      query = query.eq('role', 'teacher')
+    }
+
+    query.then(({ data, error }) => {
+      if (!error && data) {
+        setViewAsOptions(
+          data.map(({ profile_faculties, ...rest }) => ({
+            ...rest,
+            faculties: profile_faculties.map((pf) => pf.faculties),
+          }))
+        )
+      }
+    })
+  }, [canViewAs, isAdmin])
+
+  function navigate_tab(tab, path) {
+    setActiveTab(tab)
+    navigate(path)
+  }
 
   return (
-    <aside className="flex h-screen w-64 shrink-0 flex-col bg-[#1a1f2e] text-white dark:bg-[#161b27]">
-      <div className="px-4 py-5">
-        <span className="text-base font-medium">Checkpoint</span>
+    <aside
+      className="flex h-screen w-[248px] shrink-0 flex-col overflow-hidden border-r text-sidebar-ink"
+      style={{ background: 'var(--sidebar-bg)', borderColor: 'var(--sidebar-border)', color: 'var(--sidebar-ink)' }}
+    >
+      {/* Logo */}
+      <div className="flex items-center gap-2.5 px-[18px] pb-4 pt-5">
+        <div
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-[9px] font-display text-base font-bold text-white"
+          style={{
+            background: 'linear-gradient(135deg, #4f5fee, #7c3aed)',
+            boxShadow: '0 4px 12px rgba(79,95,238,0.4)',
+          }}
+        >
+          C
+        </div>
+        <span className="font-display text-base font-semibold tracking-[0.2px]">Checkpoint</span>
       </div>
 
-      <nav className="space-y-1 px-2">
-        <NavItem to="/">Dashboard</NavItem>
-        {isLol && <NavPlaceholder>My team</NavPlaceholder>}
-        <NavPlaceholder>Notifications</NavPlaceholder>
-        {/* Always reflects the real signed-in identity, not "view as" —
-            admin tools shouldn't disappear just because you're impersonating. */}
-        {realProfile?.role === 'admin' && <NavItem to="/admin">Admin</NavItem>}
+      {/* Navigation */}
+      <nav className="shrink-0 space-y-0.5 px-3">
+        <TabItem
+          label="Dashboard"
+          icon={<IconDashboard />}
+          active={activeTab === 'assessments'}
+          onClick={() => navigate_tab('assessments', '/')}
+        />
+        {(navIsAdmin || navIsLol) && (
+          <TabItem
+            label="Subjects"
+            icon={<IconSubjects />}
+            active={activeTab === 'subjects'}
+            onClick={() => navigate_tab('subjects', '/subjects')}
+          />
+        )}
+        {(navIsAdmin || navIsLol) && (
+          <TabItem
+            label="Templates"
+            icon={<IconTemplates />}
+            active={activeTab === 'templates'}
+            onClick={() => navigate_tab('templates', '/templates')}
+          />
+        )}
+        {(navIsAdmin || navIsLol) && (
+          <TabItem
+            label="Staff"
+            icon={<IconStaff />}
+            active={activeTab === 'staff'}
+            onClick={() => navigate_tab('staff', '/staff')}
+          />
+        )}
+        {navIsAdmin && (
+          <TabItem
+            label="Admin"
+            icon={<IconAdmin />}
+            active={activeTab === 'admin'}
+            onClick={() => navigate_tab('admin', '/admin')}
+          />
+        )}
+        <TabItem
+          label="Settings"
+          icon={<IconSettings />}
+          active={activeTab === 'settings'}
+          onClick={() => navigate_tab('settings', '/settings')}
+        />
+
+        {activeTab === 'assessments' && (
+          <p className="px-2 pb-1.5 pt-3.5 text-[10px] font-semibold uppercase tracking-[1.2px] text-sidebar-muted">
+            Assessment Flows
+          </p>
+        )}
       </nav>
 
-      <div className="mt-6 flex-1 overflow-y-auto px-2">
-        <p className="px-3 text-xs font-medium uppercase tracking-wide text-slate-400">Assessment flows</p>
-
-        <div className="mt-2 space-y-3">
-          {loading && <p className="px-3 py-2 text-sm text-slate-400">Loading…</p>}
-          {!loading && flows.length === 0 && (
-            <p className="px-3 py-2 text-sm text-slate-400">No flows yet</p>
+      {/* Flow cards */}
+      {activeTab === 'assessments' && (
+        <div className="sidebar-scroll min-h-0 flex-1 overflow-y-auto px-3 pb-2">
+          {loading && (
+            <p className="px-2 py-2 text-xs text-sidebar-muted">Loading…</p>
           )}
-          {groupFlows(flows).map(({ facultyName, years }) => (
-            <div key={facultyName}>
-              <p className="px-3 py-1 text-xs font-medium text-slate-300">{facultyName}</p>
-              {years.map(({ year, flows: yearFlows }) => (
-                <div key={year} className="pl-2">
-                  <p className="px-3 py-1 text-xs text-slate-500">Year {year}</p>
-                  <div className="space-y-1">
-                    {yearFlows.map((flow) => (
-                      <button
-                        key={flow.id}
-                        type="button"
-                        onClick={() => navigate(`/flows/${flow.id}`)}
-                        className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left hover:bg-white/5"
-                      >
-                        <span className="mt-1.5">
-                          <StatusDot status={FLOW_STATUS_TO_DOT[flow.status] ?? 'not_started'} />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <p className="truncate text-sm">{flow.title}</p>
-                          <p className="truncate text-xs text-slate-400">
-                            {flow.template_type === 'rubric' ? 'Rubric-based' : 'Comment-based'} · {formatDate(flow.anchor_date)}
-                          </p>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
+          {!loading && flows.length === 0 && (
+            <p className="px-2 py-2 text-xs text-sidebar-muted">No flows yet</p>
+          )}
+          {flows.map((flow) => {
+            const urgency  = getFlowUrgency(flow.flow_milestones ?? [])
+            const isActive = location.pathname === `/flows/${flow.id}`
+            const subjectName = flow.subjects?.name ?? flow.faculties?.name ?? ''
+            const yearLevel   = flow.courses?.year_level ?? null
+            const meta        = [subjectName, yearLevel ? `Year ${yearLevel}` : ''].filter(Boolean).join(' · ')
+            const milestones  = flow.flow_milestones ?? []
+            const donePct     = milestones.length > 0
+              ? Math.round(milestones.filter((m) => m.completed_at).length / milestones.length * 100)
+              : 0
+            const isUrgent = urgency.color === 'amber' || urgency.color === 'red'
 
-        {canCreateFlow && (
-          <div className="mt-3 space-y-1">
+            return (
+              <NavLink
+                key={flow.id}
+                to={`/flows/${flow.id}`}
+                className={[
+                  'relative mb-2 block overflow-hidden rounded-xl border px-3 pb-2.5 pt-3 transition-all duration-150',
+                  isActive
+                    ? 'border-primary shadow-[0_0_0_1px_var(--primary),0_8px_20px_rgba(79,95,238,0.25)]'
+                    : 'border-sidebar-border hover:border-white/[0.18] hover:-translate-y-px',
+                ].join(' ')}
+                style={{ background: 'var(--sidebar-panel)' }}
+              >
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="truncate text-[13.5px] font-semibold text-sidebar-ink">
+                    {flow.title}
+                  </span>
+                  <span
+                    className="shrink-0 rounded-full font-display text-[11px] font-semibold px-2 py-0.5"
+                    style={isUrgent
+                      ? { background: 'rgba(248,113,113,0.16)', color: '#fca5a5' }
+                      : { background: 'rgba(100,116,255,0.18)', color: '#9aa7ff' }
+                    }
+                  >
+                    {urgency.label}
+                  </span>
+                </div>
+                <div className="mb-2 text-[11.5px] text-sidebar-muted">{meta}</div>
+                <div
+                  className="h-1 overflow-hidden rounded-full"
+                  style={{ background: 'rgba(255,255,255,0.09)' }}
+                >
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${donePct}%`,
+                      background: 'linear-gradient(90deg, #4f5fee, #7c3aed)',
+                    }}
+                  />
+                </div>
+              </NavLink>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Spacer when not in assessments tab */}
+      {activeTab !== 'assessments' && <div className="flex-1" />}
+
+      {/* Footer */}
+      <div
+        className="shrink-0 space-y-2 border-t px-3 pb-3 pt-3"
+        style={{ borderColor: 'var(--sidebar-border)' }}
+      >
+        {/* View As picker */}
+        {canViewAs && (
+          <div>
+            {viewAsProfile ? (
+              <button
+                type="button"
+                onClick={() => onSetViewAs(null)}
+                className="w-full rounded-[10px] bg-amber-600/80 px-3 py-1.5 text-left text-xs font-medium text-white hover:bg-amber-600"
+              >
+                Acting as {viewAsProfile.full_name ?? viewAsProfile.email} · Exit
+              </button>
+            ) : (
+              <select
+                defaultValue=""
+                onChange={(e) => {
+                  const p = viewAsOptions.find((x) => x.id === e.target.value)
+                  if (p) onSetViewAs(p)
+                  e.target.value = ''
+                }}
+                className="w-full appearance-none rounded-[10px] border px-2 py-1.5 text-xs text-sidebar-ink outline-none"
+                style={{ background: 'var(--sidebar-panel)', borderColor: 'var(--sidebar-border)', color: 'var(--sidebar-ink)' }}
+              >
+                <option value="" disabled>View as…</option>
+                {viewAsOptions.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.full_name ?? p.email} ({p.role})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+
+        {/* Create buttons */}
+        {canCreate && (
+          <>
             <button
               type="button"
-              onClick={() => setShowNewFlowForm(true)}
-              className="w-full rounded-md border border-white/10 px-3 py-2 text-sm text-slate-200 hover:bg-white/5"
+              onClick={() => navigate('/flows/new')}
+              className="flex w-full items-center justify-center gap-1.5 rounded-[10px] py-2.5 text-[13px] font-semibold text-white transition-all duration-150 hover:-translate-y-px"
+              style={{
+                background: 'var(--primary)',
+                boxShadow: '0 4px 14px rgba(79,95,238,0.35)',
+              }}
             >
-              + Create new flow
+              ＋ New assessment
             </button>
             <button
               type="button"
               onClick={() => setShowImportFlowForm(true)}
-              className="w-full rounded-md border border-white/10 px-3 py-2 text-sm text-slate-200 hover:bg-white/5"
+              className="w-full rounded-[10px] border py-2 text-[12.5px] font-medium text-sidebar-muted transition-all duration-150 hover:border-white/20 hover:text-sidebar-ink"
+              style={{ borderColor: 'var(--sidebar-border)' }}
             >
-              Import previous flow
+              Import previous
             </button>
+          </>
+        )}
+
+        {/* User row */}
+        {realProfile && (
+          <div className="flex items-center gap-2.5 px-1.5 pt-1">
+            <div
+              className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-full text-[11px] font-bold text-white"
+              style={{ background: 'linear-gradient(135deg, #7c3aed, #4f5fee)' }}
+            >
+              {initials(realProfile.full_name)}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[12.5px] font-semibold text-sidebar-ink">
+                {realProfile.full_name ?? realProfile.email}
+              </div>
+              <div className="text-[10.5px] text-sidebar-muted">
+                {ROLE_LABELS[realProfile.role] ?? realProfile.role}
+              </div>
+            </div>
+            <ThemeToggle />
           </div>
         )}
       </div>
-
-      <div className="border-t border-white/10 px-2 py-3">
-        <NavPlaceholder>Settings</NavPlaceholder>
-        <ThemeToggle />
-      </div>
-
-      {showNewFlowForm && (
-        <NewFlowForm
-          onClose={() => setShowNewFlowForm(false)}
-          onCreated={(flowId) => {
-            setShowNewFlowForm(false)
-            refetch()
-            navigate(`/flows/${flowId}`)
-          }}
-        />
-      )}
 
       {showImportFlowForm && (
         <ImportFlowForm

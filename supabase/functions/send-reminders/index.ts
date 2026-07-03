@@ -1,132 +1,198 @@
-// Supabase Edge Function: reminder emails (Build Order step 16).
+// Supabase Edge Function: reminder emails (V2).
 //
 // Two modes, both via POST:
-//   - { step_id: "..." }   -> manual trigger (LoL "send reminder now"):
-//                              sends immediately, ignores the due-date
-//                              threshold and the already-sent check.
-//   - {} / no body          -> automatic nightly sweep (Build Order step 17
-//                              wires up pg_cron to call this): for every
-//                              incomplete step with a due_date, sends a
-//                              reminder if today matches 5/1/0/-1 days from
-//                              due date and one hasn't already been sent
-//                              for that exact threshold.
+//   - { flow_milestone_id: "..." }  -> manual trigger (LoL "Send reminder now")
+//                                       sends immediately regardless of due date or prior sends.
+//   - {} / no body                  -> automatic nightly sweep (pg_cron fires at 19:00 UTC):
+//                                       for every incomplete milestone with a due_date, sends
+//                                       at 5/1/0/-1 days relative to due_date if not already sent.
 //
-// SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are auto-injected by the Edge
-// Functions runtime. RESEND_API_KEY, EMAIL_FROM, and APP_URL are custom
-// secrets that must be set separately (see supabase/functions/README.md).
+// Recipients are resolved from assignee_mode on the milestone, not a direct assigned_to FK:
+//   - 'organiser'      -> flow.created_by (the LoL who created the flow)
+//   - 'class_teachers' -> all teachers in classes linked to the flow via flow_classes
+//   - 'lol'            -> the LoL(s) of the flow's faculty
+//
+// Email subject and body come from flow_milestones.email_subject / email_body (set on flow
+// creation from the template defaults, editable per-milestone by LoLs). Both fields support
+// {{variable}} interpolation before sending. Falls back to a generic template if not set.
+//
+// SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are auto-injected by the Edge Functions runtime.
+// RESEND_API_KEY, EMAIL_FROM, and APP_URL must be set as custom secrets.
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY')!
-const EMAIL_FROM = Deno.env.get('EMAIL_FROM') ?? 'onboarding@resend.dev'
-const APP_URL = Deno.env.get('APP_URL') ?? 'http://localhost:5173'
+const SUPABASE_URL       = Deno.env.get('SUPABASE_URL')!
+const SERVICE_ROLE_KEY   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const RESEND_API_KEY     = Deno.env.get('RESEND_API_KEY')!
+const EMAIL_FROM         = Deno.env.get('EMAIL_FROM') ?? 'onboarding@resend.dev'
+const APP_URL            = Deno.env.get('APP_URL') ?? 'http://localhost:5173'
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
 
-// Edge Functions don't add CORS headers automatically. Calling this from
-// the browser via supabase.functions.invoke() triggers a preflight OPTIONS
-// request first — without these headers the browser blocks the response
-// before the function's own logic even runs, surfacing as a generic
-// "Failed to send a request to the Edge Function" on the client.
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// Days relative to due_date: 5/1 before, 0 = due date itself, -1 = 1 day
-// overdue. Stored as-is in reminder_log.days_before (plain int column, no
-// sign convention specified in BRIEF.md — negative means "after due date").
 const THRESHOLDS = [5, 1, 0, -1]
 
-function formatDate(dateString: string) {
-  return new Date(`${dateString}T00:00:00`).toLocaleDateString('en-AU', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  })
+function formatDate(d: string) {
+  return new Date(`${d}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+// Replace {{variable}} placeholders in a template string.
+function interpolate(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`)
+}
+
+// Convert a plain-text email body (with \n line breaks) to HTML paragraphs.
+function bodyToHtml(text: string): string {
+  return text
+    .trim()
+    .split('\n\n')
+    .map((para) => `<p>${para.replace(/\n/g, '<br>')}</p>`)
+    .join('\n')
+}
+
+// Fallback HTML when no email_body template is set on the milestone.
+function buildFallbackHtml({ flow, milestone, recipientName, lolEmail }: any) {
+  const link = `${APP_URL}/flows/${flow.id}`
+  return `
+    <p>Hi ${recipientName},</p>
+    <p>This is a reminder for a milestone in <strong>${flow.title}</strong>.</p>
+    <p><strong>${milestone.title}</strong></p>
+    ${milestone.description ? `<p>${milestone.description}</p>` : ''}
+    <p>Due: <strong>${formatDate(milestone.due_date)}</strong></p>
+    <p><a href="${link}">Open flow in Checkpoint</a></p>
+    <hr />
+    <p style="color:#888;font-size:12px;">Automated reminder from Checkpoint. Replies go to ${lolEmail ?? 'your LoL'}.</p>
+  `
 }
 
 async function sendEmail({ to, cc, subject, html }: { to: string; cc?: string[]; subject: string; html: string }) {
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${RESEND_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ from: EMAIL_FROM, to, cc, subject, html }),
   })
-  if (!res.ok) {
-    throw new Error(`Resend error ${res.status}: ${await res.text()}`)
-  }
+  if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text()}`)
   return res.json()
 }
 
-// Email content per BRIEF.md's "Email content" spec: flow name + faculty,
-// step number + description, due date, link back to Checkpoint, footer.
-function buildEmailHtml({ flow, step, recipientName, lolEmail }: any) {
-  const link = `${APP_URL}/flows/${flow.id}`
-  return `
-    <p>Hi ${recipientName},</p>
-    ${step.reminder_email_body ? `<p>${step.reminder_email_body}</p>` : ''}
-    <p><strong>${flow.title}</strong> (${flow.faculties?.name ?? 'Unknown faculty'})</p>
-    <p>Step ${step.step_number}: ${step.description}</p>
-    <p>Due: ${formatDate(step.due_date)}</p>
-    <p><a href="${link}">Open in Checkpoint</a></p>
-    <hr />
-    <p style="color:#888;font-size:12px;">
-      This is an automated reminder from Checkpoint. Replies go to ${lolEmail ?? 'your LoL'}.
-    </p>
-  `
+// Resolve the list of { id, email, full_name } recipients from assignee_mode + flow context.
+async function resolveRecipients(milestone: any, flow: any): Promise<{ id: string; email: string; full_name: string | null }[]> {
+  const mode = milestone.assignee_mode
+
+  if (mode === 'organiser') {
+    const { data } = await supabase
+      .from('profiles')
+      .select('id, email, full_name')
+      .eq('id', flow.created_by)
+      .maybeSingle()
+    return data ? [data] : []
+  }
+
+  if (mode === 'class_teachers') {
+    const { data } = await supabase
+      .from('class_teachers')
+      .select('profiles ( id, email, full_name )')
+      .in('class_id',
+        (await supabase.from('flow_classes').select('class_id').eq('flow_id', flow.id))
+          .data?.map((fc: any) => fc.class_id) ?? []
+      )
+    return (data ?? []).map((ct: any) => ct.profiles).filter(Boolean)
+  }
+
+  if (mode === 'lol') {
+    const { data } = await supabase
+      .from('profile_faculties')
+      .select('profiles ( id, email, full_name )')
+      .eq('faculty_id', flow.faculty_id)
+      .eq('profiles.role', 'lol')
+    return (data ?? []).map((pf: any) => pf.profiles).filter(Boolean)
+  }
+
+  return []
 }
 
-async function findLol(facultyId: string) {
+async function findFlowLol(flow: any): Promise<{ id: string; email: string; full_name: string | null } | null> {
   const { data } = await supabase
-    .from('profiles')
-    .select('id, email, full_name')
-    .eq('faculty_id', facultyId)
-    .eq('role', 'lol')
+    .from('profile_faculties')
+    .select('profiles!inner ( id, email, full_name )')
+    .eq('faculty_id', flow.faculty_id)
+    .eq('profiles.role', 'lol')
     .limit(1)
     .maybeSingle()
-  return data
+  return (data as any)?.profiles ?? null
 }
 
-async function sendReminderForStep(step: any, flow: any, triggerType: 'auto' | 'manual', daysBefore: number | null) {
-  if (!step.assigned_to) return { skipped: 'unassigned' }
+async function sendReminderForMilestone(
+  milestone: any,
+  flow: any,
+  triggerType: 'auto' | 'manual',
+  daysBefore: number | null
+): Promise<{ sent: number; skipped: string[] }> {
+  if (milestone.reminders_enabled === false) return { sent: 0, skipped: ['reminders disabled for this milestone'] }
+  if (!milestone.due_date && !milestone.reminder_date) return { sent: 0, skipped: ['no due_date or reminder_date'] }
 
-  const { data: recipient } = await supabase
-    .from('profiles')
-    .select('id, email, full_name')
-    .eq('id', step.assigned_to)
-    .single()
+  const recipients = await resolveRecipients(milestone, flow)
+  if (recipients.length === 0) return { sent: 0, skipped: ['no recipients resolved'] }
 
-  if (!recipient?.email) return { skipped: 'no recipient email' }
+  const lol = await findFlowLol(flow)
+  const link = `${APP_URL}/flows/${flow.id}`
 
-  const lol = await findLol(flow.faculty_id)
+  let sent = 0
+  const skipped: string[] = []
 
-  const html = buildEmailHtml({
-    flow,
-    step,
-    recipientName: recipient.full_name ?? recipient.email,
-    lolEmail: lol?.email,
-  })
+  for (const recipient of recipients) {
+    if (!recipient.email) { skipped.push(`no email for ${recipient.id}`); continue }
 
-  await sendEmail({
-    to: recipient.email,
-    cc: lol?.email ? [lol.email] : undefined,
-    subject: `Reminder: ${flow.title} — Step ${step.step_number}`,
-    html,
-  })
+    const firstName = recipient.full_name?.split(' ')[0] ?? recipient.email.split('@')[0]
 
-  await supabase.from('reminder_log').insert({
-    step_id: step.id,
-    recipient_id: recipient.id,
-    lol_id: lol?.id ?? null,
-    trigger_type: triggerType,
-    days_before: daysBefore,
-  })
+    const vars: Record<string, string> = {
+      first_name:       firstName,
+      lol_name:         lol?.full_name ?? '',
+      assessment_title: flow.title,
+      course_name:      flow.courses?.name ?? '',
+      step_due_date:    milestone.due_date ? formatDate(milestone.due_date) : '',
+      checkpoint_link:  link,
+    }
 
-  return { sent: true, recipient: recipient.email }
+    const subject = milestone.email_subject
+      ? interpolate(milestone.email_subject, vars)
+      : `Reminder: ${flow.title} — ${milestone.title}`
+
+    const html = milestone.email_body
+      ? bodyToHtml(interpolate(milestone.email_body, vars))
+      : buildFallbackHtml({ flow, milestone, recipientName: firstName, lolEmail: lol?.email })
+
+    try {
+      await sendEmail({
+        to: recipient.email,
+        cc: lol?.email && lol.email !== recipient.email ? [lol.email] : undefined,
+        subject,
+        html,
+      })
+
+      await supabase.from('reminder_log').insert({
+        flow_milestone_id: milestone.id,
+        recipient_id:      recipient.id,
+        lol_id:            lol?.id ?? null,
+        trigger_type:      triggerType,
+        days_before:       daysBefore,
+        email_subject:     subject,
+        body_preview:      milestone.email_body
+          ? interpolate(milestone.email_body, vars).slice(0, 120)
+          : (milestone.description?.slice(0, 120) ?? milestone.title),
+      })
+      sent++
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`send failed for ${recipient.email}:`, msg)
+      skipped.push(`${recipient.email}: ${msg}`)
+    }
+  }
+
+  return { sent, skipped }
 }
 
 Deno.serve(async (req) => {
@@ -137,64 +203,66 @@ Deno.serve(async (req) => {
   try {
     const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {}
 
-    if (body.step_id) {
-      const { data: step, error: stepError } = await supabase
-        .from('flow_steps')
-        .select('*, flows!inner ( id, title, faculty_id, faculties ( name ) )')
-        .eq('id', body.step_id)
+    // Manual trigger: send reminder for a specific milestone now.
+    if (body.flow_milestone_id) {
+      const { data: milestone, error: msErr } = await supabase
+        .from('flow_milestones')
+        .select('*, flows!inner ( id, title, faculty_id, created_by, courses ( name ) )')
+        .eq('id', body.flow_milestone_id)
         .single()
 
-      if (stepError || !step) {
-        return new Response(JSON.stringify({ error: 'Step not found' }), {
+      if (msErr || !milestone) {
+        return new Response(JSON.stringify({ error: 'Milestone not found' }), {
           status: 404,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         })
       }
 
-      const result = await sendReminderForStep(step, step.flows, 'manual', null)
+      const result = await sendReminderForMilestone(milestone, milestone.flows, 'manual', null)
       return new Response(JSON.stringify(result), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
 
+    // Nightly sweep: process all incomplete milestones due within thresholds.
     const today = new Date().toISOString().slice(0, 10)
 
-    const { data: steps, error: stepsError } = await supabase
-      .from('flow_steps')
-      .select('*, flows!inner ( id, title, faculty_id, faculties ( name ) ), step_completions ( id )')
-      .not('due_date', 'is', null)
+    const { data: milestones, error: msErr } = await supabase
+      .from('flow_milestones')
+      .select('*, flows!inner ( id, title, faculty_id, created_by, courses ( name ) )')
+      .is('completed_at', null)
+      .or('due_date.not.is.null,reminder_date.not.is.null')
+      .eq('reminders_enabled', true)
 
-    if (stepsError) throw stepsError
+    if (msErr) throw msErr
 
     const results = []
 
-    for (const step of steps ?? []) {
-      if ((step.step_completions?.length ?? 0) > 0) continue
-
-      const daysUntilDue = Math.round((new Date(`${step.due_date}T00:00:00`).getTime() - new Date(`${today}T00:00:00`).getTime()) / 86400000)
+    for (const milestone of milestones ?? []) {
+      const anchorDate = milestone.reminder_date ?? milestone.due_date
+      const daysUntilDue = Math.round(
+        (new Date(`${anchorDate}T00:00:00`).getTime() - new Date(`${today}T00:00:00`).getTime()) / 86400000
+      )
       if (!THRESHOLDS.includes(daysUntilDue)) continue
 
       const { data: existing } = await supabase
         .from('reminder_log')
         .select('id')
-        .eq('step_id', step.id)
+        .eq('flow_milestone_id', milestone.id)
         .eq('trigger_type', 'auto')
         .eq('days_before', daysUntilDue)
         .maybeSingle()
 
       if (existing) continue
 
-      // Isolate each step's send — one bad recipient (e.g. a typo'd email,
-      // or a Resend rejection) must not abort reminders for every other
-      // step in the nightly batch.
       try {
-        const result = await sendReminderForStep(step, step.flows, 'auto', daysUntilDue)
-        results.push({ step_id: step.id, ...result })
+        const result = await sendReminderForMilestone(milestone, milestone.flows, 'auto', daysUntilDue)
+        results.push({ milestone_id: milestone.id, ...result })
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        console.error(`Failed to send reminder for step ${step.id}:`, message)
-        results.push({ step_id: step.id, failed: message })
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`sweep failed for milestone ${milestone.id}:`, msg)
+        results.push({ milestone_id: milestone.id, failed: msg })
       }
     }
 
@@ -203,9 +271,9 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.error(message)
-    return new Response(JSON.stringify({ error: message }), {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(msg)
+    return new Response(JSON.stringify({ error: msg }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })

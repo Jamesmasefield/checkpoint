@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 
-// Takes the profile to fetch flows "as" — the real logged-in profile
-// normally, or an impersonated one during admin "view as" mode. profile.id
-// is the same as the underlying auth.users id, so this works for either
-// case without needing a separate user id.
 export function useFlows(profile) {
   const [flows, setFlows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -15,23 +11,29 @@ export function useFlows(profile) {
     setLoading(true)
 
     const myFacultyIds = (profile.faculties ?? []).map((f) => f.id)
-    const isFacultyWide = (profile.role === 'lol' || profile.role === 'assistant_lol') && myFacultyIds.length > 0
-    const embed = `
+    const isAdmin = profile.role === 'admin'
+    const isLol   = profile.role === 'lol'
+
+    const baseEmbed = `
       *,
       faculties ( name ),
-      flow_steps ( id, due_date, step_completions ( id ) )
+      subjects ( name ),
+      courses ( year_level ),
+      flow_milestones ( id, title, due_date, completed_at, assignee_mode, requires_all_teachers, milestone_sign_offs ( user_id ) )
     `
 
-    let query = supabase.from('flows').select(embed)
+    let query
 
-    if (profile.role === 'admin') {
-      // school-wide view, no filter
-    } else if (isFacultyWide) {
-      query = query.in('faculty_id', myFacultyIds)
+    if (isAdmin) {
+      query = supabase.from('flows').select(`${baseEmbed}, flow_members ( user_id, role_in_flow )`)
+    } else if (isLol && myFacultyIds.length > 0) {
+      query = supabase.from('flows').select(`${baseEmbed}, flow_members ( user_id, role_in_flow )`)
+        .in('faculty_id', myFacultyIds)
     } else {
+      // Teachers: inner join filters to flows they belong to; also returns role_in_flow for sign-off counts.
       query = supabase
         .from('flows')
-        .select(`${embed}, flow_members!inner(user_id)`)
+        .select(`${baseEmbed}, flow_members!inner(user_id, role_in_flow)`)
         .eq('flow_members.user_id', profile.id)
     }
 

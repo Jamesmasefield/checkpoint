@@ -20,18 +20,14 @@ export default function ThemeToggle() {
     <button
       type="button"
       onClick={toggle}
-      className="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-white/5"
+      aria-label="Toggle light and dark mode"
+      className="relative ml-auto h-5 w-[34px] shrink-0 rounded-full transition-colors duration-200"
+      style={{ background: theme === 'dark' ? 'var(--primary)' : 'rgba(255,255,255,0.12)' }}
     >
-      <span>{theme === 'light' ? 'Light mode' : 'Dark mode'}</span>
       <span
-        className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
-        style={{ backgroundColor: theme === 'dark' ? '#4f6ef7' : '#475569' }}
-      >
-        <span
-          className="absolute h-4 w-4 rounded-full bg-white transition-transform"
-          style={{ transform: theme === 'dark' ? 'translateX(18px)' : 'translateX(2px)' }}
-        />
-      </span>
+        className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform duration-200"
+        style={{ left: 0, transform: theme === 'dark' ? 'translateX(16px)' : 'translateX(2px)' }}
+      />
     </button>
   )
 }

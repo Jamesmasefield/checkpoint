@@ -2,157 +2,139 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
 import { useProfile } from '../../hooks/useProfile'
-import { useFacultyPicker } from '../../hooks/useFacultyPicker'
-import { calculateDueDate } from '../../lib/deadlines'
+import { useBlackouts } from '../../hooks/useBlackouts'
+import { buildMilestoneDates } from '../../lib/deadlines'
 import { SELECT_CLASS, INPUT_CLASS } from '../../lib/formStyles'
-import StaffTagger from './StaffTagger'
+import { ASSIGNEE_LABEL } from '../../lib/milestoneStatus'
 
-const YEAR_LEVELS = ['7', '8', '9', '10', '11', '12']
+const fmt = (d) =>
+  d ? new Date(`${d}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
 
 export default function ImportFlowForm({ onClose, onCreated }) {
   const { user } = useAuth()
   const { profile } = useProfile()
-  const { facultyId, setFacultyId, needsPicker: needsFacultyPicker, options: faculties } = useFacultyPicker(profile)
+  const { blackouts } = useBlackouts()
 
-  const [sourceFlows, setSourceFlows] = useState([])
-  const [sourceFlowId, setSourceFlowId] = useState('')
-  const [sourceDetail, setSourceDetail] = useState(null)
+  const [sourceFlows, setSourceFlows]     = useState([])
+  const [sourceFlowId, setSourceFlowId]   = useState('')
+  const [sourceDetail, setSourceDetail]   = useState(null)
   const [loadingSource, setLoadingSource] = useState(false)
 
-  const [title, setTitle] = useState('')
-  const [yearLevel, setYearLevel] = useState('')
+  const [title, setTitle]           = useState('')
   const [anchorDate, setAnchorDate] = useState('')
-  const [staff, setStaff] = useState([])
-  const [selectedStaffIds, setSelectedStaffIds] = useState([])
   const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError]           = useState('')
 
+  // Load all flows visible to this user as import sources.
   useEffect(() => {
-    setSourceFlowId('')
-    setSourceDetail(null)
-    if (!facultyId) {
-      setStaff([])
-      setSourceFlows([])
-      return
-    }
-    supabase
-      .from('profiles')
-      .select('id, full_name, email, role, profile_faculties!inner ( faculty_id )')
-      .eq('profile_faculties.faculty_id', facultyId)
-      .neq('role', 'admin')
-      .order('full_name')
-      .then(({ data, error: fetchError }) => {
-        if (!fetchError) setStaff(data)
-      })
-    supabase
+    const myFacultyIds = (profile?.faculties ?? []).map((f) => f.id)
+    const isAdmin = profile?.role === 'admin'
+
+    let query = supabase
       .from('flows')
-      .select('id, title, anchor_date, template_type')
-      .eq('faculty_id', facultyId)
+      .select('id, title, anchor_date, template_type, faculties ( name ), subjects ( name ), courses ( year_level )')
       .order('anchor_date', { ascending: false })
-      .then(({ data, error: fetchError }) => {
-        if (!fetchError) setSourceFlows(data)
-      })
-  }, [facultyId])
 
-  useEffect(() => {
-    if (!sourceFlowId) {
-      setSourceDetail(null)
-      return
+    if (!isAdmin && myFacultyIds.length > 0) {
+      query = query.in('faculty_id', myFacultyIds)
     }
+
+    query.then(({ data, err }) => {
+      if (!err) setSourceFlows(data ?? [])
+    })
+  }, [profile])
+
+  // Load selected source flow's milestones and classes.
+  useEffect(() => {
+    if (!sourceFlowId) { setSourceDetail(null); return }
     setLoadingSource(true)
     supabase
       .from('flows')
-      .select(
-        `id, title, template_type, year_level,
-        flow_steps ( stage_number, step_number, description, default_role, is_custom, sort_order ),
-        flow_members ( user_id )`,
-      )
+      .select(`
+        id, title, template_type, faculty_id, course_id, template_id, anchor_date,
+        flow_milestones (
+          id, stage_number, sort_order, title, description,
+          assignee_mode, recipient_mode, offset_days, is_reporting_due, is_custom, due_date
+        ),
+        flow_classes ( class_id )
+      `)
       .eq('id', sourceFlowId)
       .single()
-      .then(({ data, error: fetchError }) => {
+      .then(({ data, error: fetchErr }) => {
         setLoadingSource(false)
-        if (fetchError) {
-          setError(fetchError.message)
-          return
-        }
+        if (fetchErr) { setError(fetchErr.message); return }
         setSourceDetail(data)
         setTitle(data.title)
-        setYearLevel(data.year_level)
-        setSelectedStaffIds(data.flow_members.map((m) => m.user_id))
       })
   }, [sourceFlowId])
 
-  const addStaff = (id) => {
-    setSelectedStaffIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
-  }
+  // Preview milestones with new anchor date applied.
+  const previewMilestones = (() => {
+    if (!sourceDetail || !anchorDate) return []
+    const templateMilestones = (sourceDetail.flow_milestones ?? [])
+      .filter((m) => !m.is_custom && m.offset_days != null)
+    const resolved = buildMilestoneDates(templateMilestones, anchorDate, blackouts)
+    const dateById = Object.fromEntries(resolved.map((m) => [m.id, m.due_date]))
+    return (sourceDetail.flow_milestones ?? [])
+      .sort((a, b) => a.stage_number - b.stage_number || a.sort_order - b.sort_order)
+      .map((m) => ({
+        ...m,
+        due_date: m.is_custom ? m.due_date : (dateById[m.id] ?? m.due_date),
+      }))
+  })()
 
-  const removeStaff = (id) => {
-    setSelectedStaffIds((prev) => prev.filter((s) => s !== id))
-  }
-
-  const handleSubmit = async (e) => {
+  async function handleSubmit(e) {
     e.preventDefault()
-    if (!title.trim() || !anchorDate || !facultyId || !yearLevel || !sourceDetail) {
-      setError('Source flow, title, faculty, year, and anchor date are required.')
+    if (!title.trim() || !anchorDate || !sourceDetail) {
+      setError('Source flow, title, and new assessment date are required.')
       return
     }
-
     setSubmitting(true)
     setError('')
 
-    const { data: flow, error: flowError } = await supabase
+    const { data: flow, error: flowErr } = await supabase
       .from('flows')
       .insert({
-        title: title.trim(),
-        faculty_id: facultyId,
-        template_type: sourceDetail.template_type,
-        year_level: yearLevel,
-        anchor_date: anchorDate,
-        created_by: user.id,
-        status: 'active',
-        imported_from: sourceDetail.id,
+        title:          title.trim(),
+        faculty_id:     sourceDetail.faculty_id,
+        course_id:      sourceDetail.course_id,
+        template_id:    sourceDetail.template_id,
+        template_type:  sourceDetail.template_type,
+        anchor_date:    anchorDate,
+        created_by:     user.id,
+        status:         'active',
+        imported_from:  sourceDetail.id,
       })
       .select()
       .single()
 
-    if (flowError) {
-      setError(flowError.message)
-      setSubmitting(false)
-      return
+    if (flowErr) { setError(flowErr.message); setSubmitting(false); return }
+
+    // Copy class links.
+    const classIds = (sourceDetail.flow_classes ?? []).map((fc) => fc.class_id)
+    if (classIds.length > 0) {
+      const { error: classErr } = await supabase
+        .from('flow_classes')
+        .insert(classIds.map((cid) => ({ flow_id: flow.id, class_id: cid })))
+      if (classErr) { setError(classErr.message); setSubmitting(false); return }
     }
 
-    if (selectedStaffIds.length > 0) {
-      const memberRows = selectedStaffIds.map((staffId) => {
-        const person = staff.find((s) => s.id === staffId)
-        return { flow_id: flow.id, user_id: staffId, role_in_flow: person?.role ?? null }
-      })
-      const { error: membersError } = await supabase.from('flow_members').insert(memberRows)
-      if (membersError) {
-        setError(membersError.message)
-        setSubmitting(false)
-        return
-      }
-    }
-
-    const sortedSteps = [...sourceDetail.flow_steps].sort((a, b) => a.sort_order - b.sort_order)
-    const stepRows = sortedSteps.map((step, index) => ({
-      flow_id: flow.id,
-      stage_number: step.stage_number,
-      step_number: step.step_number,
-      description: step.description,
-      default_role: step.default_role,
-      due_date: calculateDueDate(anchorDate, step.description, step.stage_number),
-      is_custom: step.is_custom,
-      sort_order: index + 1,
+    // Insert milestones with recalculated dates.
+    const milestoneRows = previewMilestones.map((m) => ({
+      flow_id:          flow.id,
+      stage_number:     m.stage_number,
+      sort_order:       m.sort_order,
+      title:            m.title,
+      description:      m.description,
+      assignee_mode:    m.assignee_mode,
+      recipient_mode:   m.recipient_mode,
+      due_date:         m.due_date,
+      is_reporting_due: m.is_reporting_due,
+      offset_days:      m.offset_days,
+      is_custom:        m.is_custom,
     }))
-    const { error: stepsError } = await supabase.from('flow_steps').insert(stepRows)
-
-    setSubmitting(false)
-
-    if (stepsError) {
-      setError(stepsError.message)
-      return
-    }
+    const { error: msErr } = await supabase.from('flow_milestones').insert(milestoneRows)
+    if (msErr) { setError(msErr.message); setSubmitting(false); return }
 
     onCreated(flow.id)
   }
@@ -165,56 +147,39 @@ export default function ImportFlowForm({ onClose, onCreated }) {
         className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-y-auto rounded-lg bg-white p-6 dark:bg-[#161b27]"
       >
         <div className="flex items-start justify-between">
-          <h2 className="text-base font-medium text-slate-900 dark:text-slate-100">Import previous flow</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
-            ✕
-          </button>
+          <div>
+            <h2 className="text-sm font-medium text-slate-900 dark:text-slate-100">Import previous flow</h2>
+            <p className="mt-0.5 text-xs text-slate-400">Copies milestones from an existing flow with a new assessment date.</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">✕</button>
         </div>
-        <p className="mt-1 text-xs text-slate-400">
-          Carries over the template type, steps (including custom ones), and tagged staff into a new, independent flow.
-          The original flow isn't affected.
-        </p>
 
-        {needsFacultyPicker && (
-          <label className="mt-4 block text-sm">
-            <span className="text-slate-600 dark:text-slate-300">Faculty</span>
-            <select value={facultyId} onChange={(e) => setFacultyId(e.target.value)} className={SELECT_CLASS}>
-              <option value="" disabled>
-                Select a faculty…
-              </option>
-              {faculties.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-
-        <label className="mt-4 block text-sm">
+        <label className="mt-5 block text-sm">
           <span className="text-slate-600 dark:text-slate-300">Import from</span>
-          <select value={sourceFlowId} onChange={(e) => setSourceFlowId(e.target.value)} disabled={!facultyId} className={SELECT_CLASS}>
-            <option value="" disabled>
-              {facultyId ? 'Select a previous flow…' : 'Select a faculty first'}
-            </option>
-            {sourceFlows.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.title} ({new Date(f.anchor_date).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })})
-              </option>
-            ))}
+          <select value={sourceFlowId} onChange={(e) => setSourceFlowId(e.target.value)} className={SELECT_CLASS}>
+            <option value="" disabled>Select a previous flow…</option>
+            {sourceFlows.map((f) => {
+              const subject  = f.subjects?.name ?? f.faculties?.name ?? ''
+              const year     = f.courses?.year_level ? `Year ${f.courses.year_level}` : ''
+              const meta     = [subject, year].filter(Boolean).join(' · ')
+              return (
+                <option key={f.id} value={f.id}>
+                  {f.title}{meta ? ` — ${meta}` : ''} · {fmt(f.anchor_date)}
+                </option>
+              )
+            })}
           </select>
-          {facultyId && sourceFlows.length === 0 && (
-            <p className="mt-1 text-xs text-slate-400">No previous flows found in this faculty yet.</p>
-          )}
+          {sourceFlows.length === 0 && <p className="mt-1 text-xs text-slate-400">No flows found yet.</p>}
         </label>
 
-        {loadingSource && <p className="mt-3 text-sm text-slate-400">Loading flow…</p>}
+        {loadingSource && <p className="mt-3 text-xs text-slate-400">Loading flow…</p>}
 
         {sourceDetail && (
           <>
-            <p className="mt-3 text-xs text-slate-400">
+            <p className="mt-2 text-xs text-slate-400">
               {sourceDetail.template_type === 'rubric' ? 'Rubric-based' : 'Comment-based'} ·{' '}
-              {sourceDetail.flow_steps.length} steps · {sourceDetail.flow_members.length} staff tagged
+              {sourceDetail.flow_milestones?.length ?? 0} milestones ·{' '}
+              {sourceDetail.flow_classes?.length ?? 0} class{sourceDetail.flow_classes?.length !== 1 ? 'es' : ''} linked
             </p>
 
             <label className="mt-4 block text-sm">
@@ -222,46 +187,37 @@ export default function ImportFlowForm({ onClose, onCreated }) {
               <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT_CLASS} />
             </label>
 
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <label className="block text-sm">
-                <span className="text-slate-600 dark:text-slate-300">Year level</span>
-                <select value={yearLevel} onChange={(e) => setYearLevel(e.target.value)} className={SELECT_CLASS}>
-                  <option value="" disabled>
-                    Select a year…
-                  </option>
-                  {YEAR_LEVELS.map((y) => (
-                    <option key={y} value={y}>
-                      Year {y}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            <label className="mt-4 block text-sm">
+              <span className="text-slate-600 dark:text-slate-300">New assessment date</span>
+              <input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} className={INPUT_CLASS} />
+            </label>
 
-              <label className="block text-sm">
-                <span className="text-slate-600 dark:text-slate-300">Anchor date (new task due date)</span>
-                <input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} className={INPUT_CLASS} />
-              </label>
-            </div>
-
-            <div className="mt-4">
-              <span className="text-sm text-slate-600 dark:text-slate-300">Tag staff</span>
-              <p className="text-xs text-slate-400">Pre-filled from the original flow — update names that have changed.</p>
-              <div className="mt-1">
-                {staff.length === 0 ? (
-                  <p className="text-sm text-slate-400">No staff found in this faculty yet.</p>
-                ) : (
-                  <StaffTagger staff={staff} selectedIds={selectedStaffIds} onAdd={addStaff} onRemove={removeStaff} />
-                )}
+            {anchorDate && previewMilestones.length > 0 && (
+              <div className="mt-4">
+                <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">Milestone preview</p>
+                <div className="max-h-48 overflow-auto rounded-lg border border-[#e5e7eb] dark:border-white/[0.08]">
+                  <table className="w-full text-left text-xs">
+                    <tbody className="divide-y divide-[#e5e7eb] dark:divide-white/[0.08]">
+                      {previewMilestones.map((m) => (
+                        <tr key={m.id}>
+                          <td className="px-3 py-1.5 text-slate-700 dark:text-slate-200">{m.title}</td>
+                          <td className="px-3 py-1.5 text-slate-400">{ASSIGNEE_LABEL[m.assignee_mode] ?? m.assignee_mode}</td>
+                          <td className="px-3 py-1.5 text-slate-400">{fmt(m.due_date)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
+            )}
           </>
         )}
 
-        {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
+        {error && <p className="mt-3 text-xs text-red-500">{error}</p>}
 
         <button
           type="submit"
-          disabled={submitting || !sourceDetail}
+          disabled={submitting || !sourceDetail || !anchorDate || !title.trim()}
           className="mt-5 w-full rounded-md bg-[#4f6ef7] px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
         >
           {submitting ? 'Importing…' : 'Import flow'}

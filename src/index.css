@@ -2,8 +2,106 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============ DESIGN TOKENS ============ */
+:root {
+  --bg: #f4f5fa;
+  --surface: #ffffff;
+  --surface-2: #f8f9fd;
+  --ink: #171a2c;
+  --ink-2: #4a5068;
+  --muted: #818699;
+  --border: #e6e8f2;
+  --border-strong: #d8dbea;
+
+  --primary: #4f5fee;
+  --primary-ink: #ffffff;
+  --primary-soft: rgba(79, 95, 238, 0.09);
+
+  --s1: #7c3aed;  --s1-soft: rgba(124, 58, 237, 0.10);
+  --s2: #2563eb;  --s2-soft: rgba(37, 99, 235, 0.10);
+  --s3: #f59e0b;  --s3-soft: rgba(245, 158, 11, 0.12);
+  --s4: #0d9488;  --s4-soft: rgba(13, 148, 136, 0.10);
+
+  --ok: #16a34a;      --ok-soft: rgba(22, 163, 74, 0.12);
+  --warn: #d97706;    --warn-soft: rgba(217, 119, 6, 0.14);
+  --danger: #dc2626;  --danger-soft: rgba(220, 38, 38, 0.10);
+  --idle: #64748b;    --idle-soft: rgba(100, 116, 139, 0.10);
+
+  --hero-grad: linear-gradient(120deg, #3d4ce0 0%, #5a3fd4 55%, #7c3aed 100%);
+  --hero-ink: #ffffff;
+  --hero-ink-dim: rgba(255, 255, 255, 0.72);
+  --hero-glass: rgba(255, 255, 255, 0.14);
+  --hero-glass-border: rgba(255, 255, 255, 0.22);
+
+  --shadow-sm: 0 1px 2px rgba(23, 26, 44, 0.05);
+  --shadow-md: 0 4px 16px rgba(23, 26, 44, 0.07);
+  --shadow-lg: 0 12px 32px rgba(23, 26, 44, 0.10);
+
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 20px;
+
+  /* Sidebar is always dark regardless of theme */
+  --sidebar-bg: #12141f;
+  --sidebar-panel: #1a1d2e;
+  --sidebar-ink: #eef0fa;
+  --sidebar-muted: #8b91a7;
+  --sidebar-border: rgba(255, 255, 255, 0.07);
+}
+
+.dark {
+  --bg: #0c0e18;
+  --surface: #141726;
+  --surface-2: #1a1e30;
+  --ink: #eef0fa;
+  --ink-2: #c3c8da;
+  --muted: #858ba1;
+  --border: rgba(255, 255, 255, 0.075);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --primary: #6474ff;
+  --primary-soft: rgba(100, 116, 255, 0.14);
+
+  --s1: #a78bfa;  --s1-soft: rgba(167, 139, 250, 0.13);
+  --s2: #60a5fa;  --s2-soft: rgba(96, 165, 250, 0.13);
+  --s3: #fbbf24;  --s3-soft: rgba(251, 191, 36, 0.13);
+  --s4: #2dd4bf;  --s4-soft: rgba(45, 212, 191, 0.13);
+
+  --ok: #4ade80;      --ok-soft: rgba(74, 222, 128, 0.13);
+  --warn: #fbbf24;    --warn-soft: rgba(251, 191, 36, 0.15);
+  --danger: #f87171;  --danger-soft: rgba(248, 113, 113, 0.13);
+  --idle: #94a3b8;    --idle-soft: rgba(148, 163, 184, 0.12);
+
+  --hero-grad: linear-gradient(120deg, #2f3cc4 0%, #4c33b8 55%, #6d28d9 100%);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+/* Sidebar scrollbar */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: 999px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.20);
+}
+
 @layer base {
   body {
-    @apply bg-[#f5f6fa] font-sans text-slate-900 dark:bg-[#0f1117] dark:text-slate-100;
+    @apply font-sans;
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
   }
 }

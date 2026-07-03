@@ -1,32 +1,79 @@
-import ProgressBar from '../ui/ProgressBar'
-import TaskRow from './TaskRow'
+import MilestoneRow from './MilestoneRow'
 
-export default function StageBlock({ title, colorHex, steps, onToggleStep, onSelectStep, readOnly }) {
-  const totalSteps = steps.length
-  const completedSteps = steps.filter((s) => (s.step_completions?.length ?? 0) > 0).length
-  const progress = totalSteps ? Math.round((completedSteps / totalSteps) * 100) : 0
+export default function StageBlock({ id, stageNumber, title, colorHex, milestones, onToggle, onSelect, readOnly, classTeachers, currentUserId }) {
+  const total     = milestones.length
+  const completed = milestones.filter((m) => !!m.completed_at).length
+  const progress  = total ? Math.round((completed / total) * 100) : 0
+
+  // Extract just the name from "Stage N — Name"
+  const stageName = title.includes(' — ') ? title.split(' — ').slice(1).join(' — ') : title
+
+  // If stageNumber isn't passed (e.g. from other callers), fall back to colorHex for the accent
+  const stageVar     = stageNumber ? `var(--s${stageNumber})`      : colorHex
+  const stageSoftVar = stageNumber ? `var(--s${stageNumber}-soft)` : `${colorHex}1A`
 
   return (
-    <div className="overflow-hidden rounded-lg border border-[#e5e7eb] bg-white dark:border-white/[0.08] dark:bg-white/[0.04]">
-      <div className="flex items-center justify-between px-4 py-3" style={{ backgroundColor: `${colorHex}1A` }}>
-        <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: colorHex }} />
-          <h3 className="text-sm font-medium" style={{ color: colorHex }}>
-            {title}
-          </h3>
-        </div>
-        <span className="text-xs text-slate-500 dark:text-slate-400">
-          {completedSteps}/{totalSteps}
+    <div
+      id={id}
+      className="overflow-hidden rounded-[var(--r-lg)] border"
+      style={{ background: 'var(--surface)', borderColor: 'var(--border)', boxShadow: 'var(--shadow-sm)' }}
+    >
+      {/* Stage header */}
+      <div
+        className="relative flex items-center gap-3 px-5 py-[13px]"
+        style={{ background: stageSoftVar }}
+      >
+        {/* Left accent bar */}
+        <div
+          className="absolute inset-y-0 left-0 w-1"
+          style={{ background: stageVar }}
+        />
+
+        {/* Number badge */}
+        <span
+          className="grid h-[26px] w-[26px] shrink-0 place-items-center rounded-[8px] font-display text-[13px] font-bold text-white"
+          style={{ background: stageVar }}
+        >
+          {stageNumber ?? ''}
         </span>
+
+        {/* Stage name */}
+        <span
+          className="text-[14.5px] font-bold tracking-[-0.1px]"
+          style={{ color: 'var(--ink)' }}
+        >
+          {stageName}
+        </span>
+
+        {/* Fraction + inline progress bar */}
+        <div className="ml-auto flex items-center gap-3">
+          <span className="font-display text-[12.5px] font-semibold" style={{ color: 'var(--muted)' }}>
+            {completed}/{total}
+          </span>
+          <div
+            className="h-[5px] w-[90px] overflow-hidden rounded-[3px]"
+            style={{ background: 'var(--border)' }}
+          >
+            <div
+              className="h-full rounded-[3px] transition-all duration-300"
+              style={{ width: `${progress}%`, background: stageVar }}
+            />
+          </div>
+        </div>
       </div>
 
-      <div className="px-4 pt-3">
-        <ProgressBar percent={progress} />
-      </div>
-
-      <div className="divide-y divide-[#e5e7eb] dark:divide-white/[0.08]">
-        {steps.map((step) => (
-          <TaskRow key={step.id} step={step} onToggle={onToggleStep} onSelect={onSelectStep} readOnly={readOnly} />
+      {/* Milestone rows */}
+      <div>
+        {milestones.map((m) => (
+          <MilestoneRow
+            key={m.id}
+            milestone={m}
+            onToggle={onToggle}
+            onSelect={onSelect}
+            readOnly={readOnly}
+            classTeachers={classTeachers}
+            currentUserId={currentUserId}
+          />
         ))}
       </div>
     </div>

@@ -18,11 +18,11 @@ export function useAuth() {
     return () => listener.subscription.unsubscribe()
   }, [])
 
-  const signInWithMagicLink = (email) =>
-    supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.origin },
-    })
+  const signInWithPassword = (email, password) =>
+    supabase.auth.signInWithPassword({ email, password })
+
+  const updatePassword = (newPassword) =>
+    supabase.auth.updateUser({ password: newPassword })
 
   const signOut = () => supabase.auth.signOut()
 
@@ -30,7 +30,8 @@ export function useAuth() {
     session,
     user: session?.user ?? null,
     loading,
-    signInWithMagicLink,
+    signInWithPassword,
+    updatePassword,
     signOut,
   }
 }

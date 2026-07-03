@@ -1,37 +1,102 @@
-// Deadline Logic (BRIEF.md "Deadline Logic" table). Trigger phrases are
-// matched as case-insensitive substrings of the step description. Longer,
-// more specific phrases are checked first so e.g. "prior to 3-week
-// deadline" isn't caught by the more generic "3-week deadline" rule first.
+// Deadline calculation for V2 milestone system.
 //
-// The brief gives no fallback for Stage 3-4 steps that match no trigger
-// phrase (only "Stage 1-2" has an explicit default of anchor-21). Stage 3-4
-// non-matches are treated as final wrap-up steps and default to the same
-// +21 day zone most of their matching siblings land in. See BRIEF-UPDATES.md.
+// Milestone due dates are computed from a numeric offset_days stored on each
+// template milestone: negative = before assessment_date, positive = after.
 //
-// Known gap: Template B's step 16 ("Prior to deadline: check Compass...")
-// doesn't literally contain "3-week", so it won't match the "prior to
-// 3-week deadline" rule even though it's clearly the same conceptual step
-// as Template A's matching one. Falls through to the Stage 3-4 default
-// (+21) instead of the intended +18. The LoL can override the date
-// manually after creation — see TaskDetailPanel.
-const TRIGGER_RULES = [
-  { phrase: 'prior to 3-week deadline', offsetDays: 18 },
-  { phrase: '2-week marking deadline', offsetDays: 14 },
-  { phrase: 'before the 2-week noa window', offsetDays: -14 },
-  { phrase: 'on the day of the task', offsetDays: 0 },
-  { phrase: 'within 3 weeks', offsetDays: 21 },
-  { phrase: '3-week deadline', offsetDays: 21 },
-]
+// Blackout days are excluded from the countdown: addWorkingDays counts
+// non-blackout calendar days from the anchor. A blackout week that falls
+// inside the countdown window shifts the deadline by the full blackout
+// duration, not just by the days the raw date overlaps.
 
-function addDays(anchorDate, days) {
-  const d = new Date(`${anchorDate}T00:00:00`)
-  d.setDate(d.getDate() + days)
+function addDays(dateStr, days) {
+  const d = new Date(`${dateStr}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
   return d.toISOString().slice(0, 10)
 }
 
-export function calculateDueDate(anchorDate, description, stageNumber) {
-  const lower = description.toLowerCase()
-  const rule = TRIGGER_RULES.find((r) => lower.includes(r.phrase))
-  if (rule) return addDays(anchorDate, rule.offsetDays)
-  return addDays(anchorDate, stageNumber <= 2 ? -21 : 21)
+function isInAnyBlackout(dateStr, sorted) {
+  return sorted.some((bw) => dateStr >= bw.start_date && dateStr <= bw.end_date)
+}
+
+// Computes a raw due date from an anchor date and an offset in days.
+// No blackout checking — use addWorkingDays for blackout-aware scheduling.
+export function computeDueDate(anchorDate, offsetDays) {
+  return addDays(anchorDate, offsetDays)
+}
+
+// Adds n non-blackout days from startDate, skipping over blackout periods.
+// Negative n counts backwards. Exported so the edit form can use it too.
+export function addWorkingDays(startDate, n, blackoutWeeks) {
+  if (!n || n === 0) return startDate
+  if (!blackoutWeeks || blackoutWeeks.length === 0) return addDays(startDate, n)
+
+  const sorted = [...blackoutWeeks].sort((a, b) =>
+    a.start_date.localeCompare(b.start_date)
+  )
+  const direction = n > 0 ? 1 : -1
+  const steps = Math.abs(n)
+  let current = startDate
+  let count = 0
+
+  while (count < steps) {
+    current = addDays(current, direction)
+    if (!isInAnyBlackout(current, sorted)) count++
+  }
+  return current
+}
+
+// Pushes a date past any blackout weeks it falls within.
+// Use this for custom (explicit) dates, not for offset-based scheduling.
+export function resolveBlackout(dateStr, blackoutWeeks) {
+  if (!blackoutWeeks || blackoutWeeks.length === 0) return dateStr
+
+  const sorted = [...blackoutWeeks].sort((a, b) =>
+    a.start_date.localeCompare(b.start_date)
+  )
+
+  let resolved = dateStr
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const bw of sorted) {
+      if (resolved >= bw.start_date && resolved <= bw.end_date) {
+        resolved = addDays(bw.end_date, 1)
+        changed = true
+        break
+      }
+    }
+  }
+  return resolved
+}
+
+// Applies the blackout resolver to each milestone independently.
+// Used for custom-date milestones; template milestones use buildMilestoneDates.
+export function applyBlackoutsToMilestones(milestones, blackoutWeeks) {
+  if (!blackoutWeeks || blackoutWeeks.length === 0) return milestones
+  return milestones.map((m) => {
+    if (!m.due_date) return { ...m }
+    const resolved = resolveBlackout(m.due_date, blackoutWeeks)
+    if (resolved === m.due_date) return { ...m }
+    return { ...m, due_date: resolved, blackout_original_date: m.due_date }
+  })
+}
+
+// Computes due dates for template milestones, counting offset_days as
+// non-blackout working days so blackout periods don't shrink the window.
+// Sets blackout_original_date when the date shifts due to blackouts.
+export function buildMilestoneDates(templateMilestones, anchorDate, blackoutWeeks) {
+  const sorted = [...templateMilestones].sort((a, b) => a.sort_order - b.sort_order)
+  const hasBlackouts = blackoutWeeks && blackoutWeeks.length > 0
+
+  return sorted.map((m) => {
+    const rawDate = computeDueDate(anchorDate, m.offset_days ?? 0)
+    const resolvedDate = hasBlackouts
+      ? addWorkingDays(anchorDate, m.offset_days ?? 0, blackoutWeeks)
+      : rawDate
+    const result = { ...m, due_date: resolvedDate }
+    if (hasBlackouts && resolvedDate !== rawDate) {
+      result.blackout_original_date = rawDate
+    }
+    return result
+  })
 }

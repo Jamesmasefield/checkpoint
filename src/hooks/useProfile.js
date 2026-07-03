@@ -28,18 +28,19 @@ export function useProfile() {
           console.error('useProfile fetch error:', error)
           setProfile(null)
         } else {
-          // Faculty affiliation is many-to-many (profile_faculties) — flatten
-          // into profile.faculties: [{id, name}] for consumers.
           const { profile_faculties, ...rest } = data
           setProfile({ ...rest, faculties: profile_faculties.map((pf) => pf.faculties) })
         }
         setLoading(false)
       })
 
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [user])
 
   return { profile, loading }
 }
+
+// Role helpers — V2 has three roles only.
+export const isAdmin = (profile) => profile?.role === 'admin'
+export const isLol   = (profile) => profile?.role === 'lol' || profile?.role === 'admin'
+export const isTeacher = (profile) => profile?.role === 'teacher'
