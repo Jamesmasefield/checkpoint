@@ -8,9 +8,10 @@
 //                                       at 5/1/0/-1 days relative to due_date if not already sent.
 //
 // Recipients are resolved from assignee_mode on the milestone, not a direct assigned_to FK:
-//   - 'organiser'      -> flow.created_by (the LoL who created the flow)
+//   - 'organiser'      -> flow.created_by (the organising teacher)
 //   - 'class_teachers' -> all teachers in classes linked to the flow via flow_classes
-//   - 'lol'            -> the LoL(s) of the flow's faculty
+//   - 'lol'            -> flow.lol_id (the LoL picked at flow creation); falls back to
+//                          every LoL of the flow's faculty for flows created before lol_id existed
 //
 // Email subject and body come from flow_milestones.email_subject / email_body (set on flow
 // creation from the template defaults, editable per-milestone by LoLs). Both fields support
@@ -103,6 +104,17 @@ async function resolveRecipients(milestone: any, flow: any): Promise<{ id: strin
   }
 
   if (mode === 'lol') {
+    // Prefer the LoL explicitly picked for this flow. Falls back to every LoL
+    // of the flow's faculty for flows created before lol_id existed.
+    if (flow.lol_id) {
+      const { data } = await supabase
+        .from('profiles')
+        .select('id, email, full_name')
+        .eq('id', flow.lol_id)
+        .maybeSingle()
+      return data ? [data] : []
+    }
+
     const { data } = await supabase
       .from('profile_faculties')
       .select('profiles ( id, email, full_name )')
@@ -114,7 +126,19 @@ async function resolveRecipients(milestone: any, flow: any): Promise<{ id: strin
   return []
 }
 
+// Resolve the flow's LoL for the {{lol_name}} signature and reminder_log.lol_id.
+// Prefers the explicitly picked flow.lol_id; falls back to an arbitrary
+// faculty LoL for flows created before that column existed.
 async function findFlowLol(flow: any): Promise<{ id: string; email: string; full_name: string | null } | null> {
+  if (flow.lol_id) {
+    const { data } = await supabase
+      .from('profiles')
+      .select('id, email, full_name')
+      .eq('id', flow.lol_id)
+      .maybeSingle()
+    if (data) return data
+  }
+
   const { data } = await supabase
     .from('profile_faculties')
     .select('profiles!inner ( id, email, full_name )')
@@ -131,10 +155,12 @@ async function sendReminderForMilestone(
   triggerType: 'auto' | 'manual',
   daysBefore: number | null
 ): Promise<{ sent: number; skipped: string[] }> {
+  console.log(`[send] milestone=${milestone.id} mode=${milestone.assignee_mode} trigger=${triggerType} reminders_enabled=${milestone.reminders_enabled}`)
   if (milestone.reminders_enabled === false) return { sent: 0, skipped: ['reminders disabled for this milestone'] }
-  if (!milestone.due_date && !milestone.reminder_date) return { sent: 0, skipped: ['no due_date or reminder_date'] }
+  if (triggerType === 'auto' && !milestone.due_date && !milestone.reminder_date) return { sent: 0, skipped: ['no due_date or reminder_date'] }
 
   const recipients = await resolveRecipients(milestone, flow)
+  console.log(`[send] resolved ${recipients.length} recipient(s):`, recipients.map(r => r.email))
   if (recipients.length === 0) return { sent: 0, skipped: ['no recipients resolved'] }
 
   const lol = await findFlowLol(flow)
@@ -168,7 +194,6 @@ async function sendReminderForMilestone(
     try {
       await sendEmail({
         to: recipient.email,
-        cc: lol?.email && lol.email !== recipient.email ? [lol.email] : undefined,
         subject,
         html,
       })
@@ -207,7 +232,7 @@ Deno.serve(async (req) => {
     if (body.flow_milestone_id) {
       const { data: milestone, error: msErr } = await supabase
         .from('flow_milestones')
-        .select('*, flows!inner ( id, title, faculty_id, created_by, courses ( name ) )')
+        .select('*, flows!inner ( id, title, faculty_id, created_by, lol_id, courses ( name ) )')
         .eq('id', body.flow_milestone_id)
         .single()
 
@@ -230,7 +255,7 @@ Deno.serve(async (req) => {
 
     const { data: milestones, error: msErr } = await supabase
       .from('flow_milestones')
-      .select('*, flows!inner ( id, title, faculty_id, created_by, courses ( name ) )')
+      .select('*, flows!inner ( id, title, faculty_id, created_by, lol_id, courses ( name ) )')
       .is('completed_at', null)
       .or('due_date.not.is.null,reminder_date.not.is.null')
       .eq('reminders_enabled', true)

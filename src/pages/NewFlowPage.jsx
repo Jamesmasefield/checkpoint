@@ -314,6 +314,7 @@ export default function NewFlowPage() {
   const [title, setTitle]             = useState('')
   const [titleTouched, setTitleTouched] = useState(false)
   const [organiserId, setOrganiserId] = useState('')
+  const [lolId, setLolId]             = useState('')
   const [submitting, setSubmitting]   = useState(false)
   const [error, setError]             = useState('')
 
@@ -371,14 +372,21 @@ export default function NewFlowPage() {
   useEffect(() => {
     setFacultyTeachers([])
     setTeacherIds([])
+    setLolId('')
     if (!facultyId) return
     supabase
       .from('profiles')
-      .select('id, full_name, email, profile_faculties!inner(faculty_id)')
+      .select('id, full_name, email, role, profile_faculties!inner(faculty_id)')
       .eq('profile_faculties.faculty_id', facultyId)
       .order('full_name')
       .then(({ data }) => { if (data) setFacultyTeachers(data) })
   }, [facultyId])
+
+  // LoLs of the selected faculty — auto-select when there's exactly one
+  const facultyLols = facultyTeachers.filter((p) => p.role === 'lol')
+  useEffect(() => {
+    if (facultyLols.length === 1) setLolId(facultyLols[0].id)
+  }, [facultyTeachers]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Rebuild milestones when template / date / blackouts change
   useEffect(() => {
@@ -450,6 +458,7 @@ export default function NewFlowPage() {
         template_type: selectedTemplate.template_type,
         anchor_date:   anchorDate,
         created_by:    organiserId || user.id,
+        lol_id:        lolId || null,
         status:        'active',
         class_count:   selectedClassIds.length || courseClasses.length,
       })
@@ -488,13 +497,17 @@ export default function NewFlowPage() {
       if (classErr) { setError(classErr.message); setSubmitting(false); return }
     }
 
-    // Tag flow members: organiser + selected class teachers (deduplicated)
+    // Tag flow members: organiser + LoL + selected class teachers (deduplicated,
+    // first role assigned wins if the same person holds more than one).
     const organiserUid = organiserId || user.id
-    const memberUids = [organiserUid, ...teacherIds.filter((id) => id !== organiserUid)]
-    const memberRows = memberUids.map((uid) => ({
-      flow_id:      flow.id,
-      user_id:      uid,
-      role_in_flow: uid === organiserUid ? 'organiser' : 'class_teacher',
+    const roleByUid = new Map()
+    roleByUid.set(organiserUid, 'organiser')
+    if (lolId) roleByUid.set(lolId, roleByUid.get(lolId) ?? 'lol')
+    for (const id of teacherIds) roleByUid.set(id, roleByUid.get(id) ?? 'class_teacher')
+    const memberRows = Array.from(roleByUid, ([user_id, role_in_flow]) => ({
+      flow_id: flow.id,
+      user_id,
+      role_in_flow,
     }))
     const { error: membersErr } = await supabase.from('flow_members').insert(memberRows)
     if (membersErr) { setError(membersErr.message); setSubmitting(false); return }
@@ -690,7 +703,7 @@ export default function NewFlowPage() {
               <div className="rounded-lg border border-[#e5e7eb] p-5 dark:border-white/[0.08]">
                 <h2 className="mb-4 text-sm font-medium text-slate-700 dark:text-slate-300">Staffing</h2>
                 <div className="space-y-3">
-                  {isAdmin && staff.length > 0 && (
+                  {isAdmin && staff.length > 0 ? (
                     <div>
                       <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Organising teacher</label>
                       <select value={organiserId} onChange={(e) => setOrganiserId(e.target.value)} className={SEL}>
@@ -698,6 +711,37 @@ export default function NewFlowPage() {
                           <option key={p.id} value={p.id}>{p.full_name ?? p.email} ({p.role})</option>
                         ))}
                       </select>
+                    </div>
+                  ) : (
+                    facultyId && (
+                      <div>
+                        <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Organising teacher</label>
+                        <select value={organiserId} onChange={(e) => setOrganiserId(e.target.value)} className={SEL}>
+                          {facultyTeachers.map((p) => (
+                            <option key={p.id} value={p.id}>{p.full_name ?? p.email}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )
+                  )}
+
+                  {facultyId && (
+                    <div>
+                      <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Leader of Learning</label>
+                      <select value={lolId} onChange={(e) => setLolId(e.target.value)} className={SEL} disabled={facultyLols.length === 0}>
+                        <option value="">
+                          {facultyLols.length === 0 ? 'No LoL assigned to this faculty' : 'Select a LoL…'}
+                        </option>
+                        {facultyLols.map((p) => (
+                          <option key={p.id} value={p.id}>{p.full_name ?? p.email}</option>
+                        ))}
+                      </select>
+                      {facultyLols.length === 0 && (
+                        <p className="mt-1 text-xs text-slate-400">No LoL is assigned to this faculty yet — add one from the Admin page first.</p>
+                      )}
+                      {facultyLols.length > 1 && !lolId && (
+                        <p className="mt-1 text-xs text-amber-500">This faculty has multiple LoLs — pick the one for this task so reminders and the email signature go to the right person.</p>
+                      )}
                     </div>
                   )}
 
