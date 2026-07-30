@@ -13,7 +13,7 @@ const ROLES = [
 const TABLE_SELECT =
   'appearance-none rounded-md border border-[#e5e7eb] bg-white px-2 py-1.5 text-sm text-slate-900 outline-none focus:border-[#4f6ef7] dark:border-white/[0.08] dark:bg-[#161b27] dark:text-slate-200'
 
-function StaffPanel({ person, faculties, onClose, onChanged, isAdmin, onActAs }) {
+function StaffPanel({ person, faculties, onClose, onChanged, isAdmin, actor, onActAs }) {
   const [fullName, setFullName] = useState(person.full_name ?? '')
   const [role, setRole]         = useState(person.role ?? 'teacher')
   const [memberIds, setMemberIds] = useState(
@@ -21,6 +21,16 @@ function StaffPanel({ person, faculties, onClose, onChanged, isAdmin, onActAs })
   )
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteError, setDeleteError]     = useState('')
+  const [facultyError, setFacultyError]   = useState('')
+
+  // LoLs can add/remove *teachers* to/from faculties they themselves belong
+  // to (enforced server-side by profile_faculties_lol_write); everything
+  // else stays admin-only.
+  const actorFacultyIds = (actor?.faculties ?? []).map((f) => f.id)
+  function canManageFaculty(facultyId) {
+    if (isAdmin) return true
+    return actor?.role === 'lol' && person.role === 'teacher' && actorFacultyIds.includes(facultyId)
+  }
 
   async function save() {
     await supabase.from('profiles').update({ full_name: fullName.trim() || null, role }).eq('id', person.id)
@@ -45,11 +55,15 @@ function StaffPanel({ person, faculties, onClose, onChanged, isAdmin, onActAs })
   }
 
   async function toggleFaculty(facultyId) {
+    if (!canManageFaculty(facultyId)) return
+    setFacultyError('')
     if (memberIds.includes(facultyId)) {
-      await supabase.from('profile_faculties').delete().eq('faculty_id', facultyId).eq('profile_id', person.id)
+      const { error } = await supabase.from('profile_faculties').delete().eq('faculty_id', facultyId).eq('profile_id', person.id)
+      if (error) { setFacultyError(error.message); return }
       setMemberIds(ids => ids.filter(id => id !== facultyId))
     } else {
-      await supabase.from('profile_faculties').upsert({ faculty_id: facultyId, profile_id: person.id })
+      const { error } = await supabase.from('profile_faculties').upsert({ faculty_id: facultyId, profile_id: person.id })
+      if (error) { setFacultyError(error.message); return }
       setMemberIds(ids => [...ids, facultyId])
     }
   }
@@ -90,16 +104,22 @@ function StaffPanel({ person, faculties, onClose, onChanged, isAdmin, onActAs })
             <div className="space-y-1">
               {faculties.map((f) => {
                 const isMember = memberIds.includes(f.id)
+                const editable = canManageFaculty(f.id)
                 return (
-                  <label key={f.id} className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm ${
-                    isMember ? 'border-[#4f6ef7] bg-[#4f6ef7]/5' : 'border-[#e5e7eb] dark:border-white/[0.08]'
-                  }`}>
-                    <input type="checkbox" checked={isMember} onChange={() => toggleFaculty(f.id)} className="rounded" />
+                  <label
+                    key={f.id}
+                    title={editable ? undefined : 'Only admins, or LoLs of this faculty adding a teacher, can change this'}
+                    className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${editable ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'} ${
+                      isMember ? 'border-[#4f6ef7] bg-[#4f6ef7]/5' : 'border-[#e5e7eb] dark:border-white/[0.08]'
+                    }`}
+                  >
+                    <input type="checkbox" checked={isMember} disabled={!editable} onChange={() => toggleFaculty(f.id)} className="rounded" />
                     <span className="text-slate-700 dark:text-slate-200">{f.name}</span>
                   </label>
                 )
               })}
             </div>
+            {facultyError && <p className="mt-2 text-xs text-red-500">{facultyError}</p>}
           </div>
         </div>
 
@@ -384,6 +404,7 @@ export default function StaffPage() {
           onClose={() => { fetchData(); setSelected(null) }}
           onChanged={() => { fetchData(); setSelected(null) }}
           isAdmin={profile?.role === 'admin'}
+          actor={profile}
           onActAs={profile?.role === 'admin' && !viewAsProfile ? handleActAs : undefined}
         />
       )}

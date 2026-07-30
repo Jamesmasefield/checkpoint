@@ -259,8 +259,9 @@ create policy "profiles_admin_write" on profiles
   with check (is_admin());
 
 -- ---- profile_faculties ----
--- Readable by anyone (faculty affiliation isn't sensitive); only admins
--- assign people to faculties.
+-- Readable by anyone (faculty affiliation isn't sensitive). Admins can
+-- assign anyone to any faculty; LoLs can additionally add/remove teachers
+-- to/from faculties they themselves belong to (see profile_faculties_lol_write).
 drop policy if exists "profile_faculties_select" on profile_faculties;
 create policy "profile_faculties_select" on profile_faculties
   for select to authenticated
@@ -271,6 +272,18 @@ create policy "profile_faculties_admin_write" on profile_faculties
   for all to authenticated
   using (is_admin())
   with check (is_admin());
+
+drop policy if exists "profile_faculties_lol_write" on profile_faculties;
+create policy "profile_faculties_lol_write" on profile_faculties
+  for all to authenticated
+  using (
+    is_lol_of_faculty(faculty_id)
+    and exists (select 1 from profiles where id = profile_id and role = 'teacher')
+  )
+  with check (
+    is_lol_of_faculty(faculty_id)
+    and exists (select 1 from profiles where id = profile_id and role = 'teacher')
+  );
 
 -- ---- flows ----
 -- Users can read flows they are tagged into; LoLs/Assistant LoLs can read
