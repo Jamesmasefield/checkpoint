@@ -294,13 +294,13 @@ export default function NewFlowPage() {
     q.then(({ data }) => { if (data) setFaculties(data) })
   }, [isAdmin])
 
-  // Staff for organiser picker (admin only)
+  // Staff for organiser picker (admin only) and for adding class teachers
+  // from outside the selected faculty
   const [staff, setStaff] = useState([])
   useEffect(() => {
-    if (!isAdmin) return
     supabase.from('profiles').select('id, full_name, email, role').order('full_name')
       .then(({ data }) => { if (data) setStaff(data) })
-  }, [isAdmin])
+  }, [])
 
   // Teachers in the selected faculty
   const [facultyTeachers, setFacultyTeachers] = useState([])
@@ -750,6 +750,7 @@ export default function NewFlowPage() {
                       <label className="mb-1.5 block text-xs text-slate-500 dark:text-slate-400">Class teachers</label>
                       <TeacherPicker
                         teachers={facultyTeachers}
+                        otherTeachers={staff}
                         value={teacherIds}
                         onChange={setTeacherIds}
                       />

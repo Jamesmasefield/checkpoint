@@ -47,6 +47,15 @@ export default function FlowPage() {
   const [draftTeacherIds, setDraftTeacherIds] = useState([])
   const [savingTeachers, setSavingTeachers]   = useState(false)
 
+  // All staff — used to let the class teacher picker add someone from
+  // outside the flow's faculty (e.g. a marker who isn't otherwise a
+  // teacher in that faculty)
+  const [allStaff, setAllStaff] = useState([])
+  useEffect(() => {
+    supabase.from('profiles').select('id, full_name, email').order('full_name')
+      .then(({ data }) => { if (data) setAllStaff(data) })
+  }, [])
+
   const fetchFlow = useCallback((silent = false) => {
     if (!silent) setLoading(true)
     return supabase
@@ -236,7 +245,7 @@ export default function FlowPage() {
     }
 
     if (toAdd.length > 0 || toRemove.length > 0) {
-      const added   = toAdd.map((tid) => facultyTeachers.find((t) => t.id === tid)?.full_name ?? tid)
+      const added   = toAdd.map((tid) => [...facultyTeachers, ...allStaff].find((t) => t.id === tid)?.full_name ?? tid)
       const removed = toRemove.map((tid) => classTeachers.find((t) => t.id === tid)?.full_name ?? tid)
       logAction({ actorId: effectiveUserId, actorName: profile?.full_name, actorEmail: profile?.email, action: 'flow.teachers_updated', entityType: 'flow', entityId: id, details: { flow_title: flow?.title, added, removed, ...(viewAsProfile ? { impersonated_by: realProfile?.full_name } : {}) } })
     }
@@ -416,6 +425,7 @@ export default function FlowPage() {
               <div className="space-y-2">
                 <TeacherPicker
                   teachers={facultyTeachers}
+                  otherTeachers={allStaff}
                   value={draftTeacherIds}
                   onChange={setDraftTeacherIds}
                 />
