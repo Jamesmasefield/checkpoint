@@ -792,15 +792,6 @@ export default function NewFlowPage() {
                       : 'Select a template and assessment date to preview.'}
                   </p>
                 </div>
-                {canManageReminders && milestones.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setAllReminders(milestones.every((m) => !(m.reminders_enabled ?? true)))}
-                    className="shrink-0 rounded px-2.5 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-white/10"
-                  >
-                    {milestones.every((m) => !(m.reminders_enabled ?? true)) ? 'Turn on all reminders' : 'Turn off all reminders'}
-                  </button>
-                )}
               </div>
 
               {milestones.length === 0 ? (
@@ -815,6 +806,18 @@ export default function NewFlowPage() {
                   <div className="border-b border-[#e5e7eb] px-4 py-4 dark:border-white/[0.08]">
                     <Stepper milestones={milestones} />
                   </div>
+
+                  {canManageReminders && (
+                    <div className="flex justify-end border-b border-[#e5e7eb] px-5 py-2 dark:border-white/[0.08]">
+                      <button
+                        type="button"
+                        onClick={() => setAllReminders(milestones.every((m) => !(m.reminders_enabled ?? true)))}
+                        className="shrink-0 rounded px-2.5 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-white/10"
+                      >
+                        {milestones.every((m) => !(m.reminders_enabled ?? true)) ? 'Turn on all email reminders' : 'Turn off all email reminders'}
+                      </button>
+                    </div>
+                  )}
 
                   {/* Insert slot at start */}
                   {insertAtIdx === 0 ? (
