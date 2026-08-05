@@ -424,6 +424,9 @@ export default function NewFlowPage() {
       i === idx ? { ...m, reminders_enabled: !(m.reminders_enabled ?? true) } : m
     ))
   }
+  function setAllReminders(enabled) {
+    setMilestones((ms) => ms.map((m) => ({ ...m, reminders_enabled: enabled })))
+  }
   function saveEdit(updated) {
     setMilestones((ms) => ms.map((m, i) => i === editingIdx ? { ...updated, _key: m._key } : m))
     setEditingIdx(null)
@@ -789,6 +792,15 @@ export default function NewFlowPage() {
                       : 'Select a template and assessment date to preview.'}
                   </p>
                 </div>
+                {canManageReminders && milestones.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setAllReminders(milestones.every((m) => !(m.reminders_enabled ?? true)))}
+                    className="shrink-0 rounded px-2.5 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-white/10"
+                  >
+                    {milestones.every((m) => !(m.reminders_enabled ?? true)) ? 'Turn on all reminders' : 'Turn off all reminders'}
+                  </button>
+                )}
               </div>
 
               {milestones.length === 0 ? (
